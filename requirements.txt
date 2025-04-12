@@ -1,4 +1,1 @@
-Flask
-Redis
-gunicorn
-nose2
+Flask==2.0.1
