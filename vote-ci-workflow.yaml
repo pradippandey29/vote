@@ -1,20 +1,20 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  generateName: vote-ci-
+  generateName: multi-stage-deploy-
 spec:
-  entrypoint: main
+  entrypoint: deploy-pipeline
+  serviceAccountName: argo-workflow
   arguments:
     parameters:
     - name: repo-url
-      value: "https://github.com/xxxxxx/vote.git"
+      value: "https://github.com/your-username/vote-app.git"
     - name: branch
       value: "main"
     - name: image
-      value: "yyyyyy/vote"
+      value: "your-docker-repo/vote"
     - name: dockerfile
       value: "Dockerfile"
-
   volumeClaimTemplates:
   - metadata:
       name: workspace
@@ -33,43 +33,30 @@ spec:
           path: config.json
 
   templates:
-  - name: main
-    inputs:
-      parameters:
-      - name: repo-url
-      - name: branch
-      - name: image
-      - name: dockerfile
+  - name: deploy-pipeline
     steps:
     - - name: clone
         template: clone
-        arguments:
-          parameters:
-          - name: repo-url
-            value: "{{inputs.parameters.repo-url}}"
-          - name: branch
-            value: "{{inputs.parameters.branch}}"
     - - name: build
         template: build
     - - name: test
         template: test
-    - - name: imagebuild
-        template: imagebuild
+    - - name: deploy-to-stage
+        template: deploy
         arguments:
           parameters:
-          - name: commit-sha
-            value: "{{steps.clone.outputs.parameters.commit-sha}}"
-          - name: image
-            value: "{{inputs.parameters.image}}"
-          - name: dockerfile
-            value: "{{inputs.parameters.dockerfile}}"
+          - name: environment
+            value: "staging"
+    - - name: manual-approval
+        template: manual-approval
+    - - name: deploy-to-prod
+        template: deploy
+        arguments:
+          parameters:
+          - name: environment
+            value: "production"
 
-  # Clone task
   - name: clone
-    inputs:
-      parameters:
-      - name: repo-url
-      - name: branch
     script:
       image: alpine/git
       command: [sh]
@@ -88,7 +75,6 @@ spec:
         valueFrom:
           path: /workspace/commit-sha.txt
 
-  # Build task
   - name: build
     script:
       image: python:3.9
@@ -101,7 +87,6 @@ spec:
       - name: workspace
         mountPath: /workspace
 
-  # Test task
   - name: test
     script:
       image: python:3.9
@@ -115,20 +100,17 @@ spec:
       - name: workspace
         mountPath: /workspace
 
-  # Image build and publish task using Kaniko
-  - name: imagebuild
+  - name: deploy
     inputs:
       parameters:
-      - name: commit-sha
-      - name: image
-      - name: dockerfile
+      - name: environment
     container:
       image: gcr.io/kaniko-project/executor:latest
       command: ["/kaniko/executor"]
       args:
       - --dockerfile=/workspace/{{inputs.parameters.dockerfile}}
       - --context=/workspace
-      - --destination={{inputs.parameters.image}}:{{inputs.parameters.commit-sha}}
+      - --destination={{inputs.parameters.image}}:{{inputs.parameters.environment}}
       - --force
       volumeMounts:
       - name: workspace
@@ -139,3 +121,13 @@ spec:
       - name: DOCKER_CONFIG
         value: /kaniko/.docker
 
+  - name: manual-approval
+    inputs: {}
+    script:
+      image: argoproj/argoexec:latest
+      command: [sh]
+      source: |
+        #!/bin/sh
+        echo "Waiting for manual approval to promote to production..."
+        sleep 30  # Here you can replace this with an actual approval mechanism if needed
+        echo "Approved! Proceeding to production deploy."
